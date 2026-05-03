@@ -27,10 +27,12 @@ def get_neighbor(valid_points, scene_points, lengths_1, lengths_2):
     return neighbor_in_scene_pcld
 
 
-def get_depth_mask(depth):
-    depth_tensor = torch.from_numpy(depth).cuda()
-    depth_mask = torch.logical_and(depth_tensor > 0, depth_tensor < DEPTH_TRUNC).reshape(-1)
-    return depth_mask
+def prepare_depth_for_backprojection(depth):
+    finite_mask = np.isfinite(depth)
+    valid_depth_mask = finite_mask & (depth > 0) & (depth < DEPTH_TRUNC)
+    clipped_depth = np.where(valid_depth_mask, depth, 0).astype(np.float32)
+    depth_mask = torch.from_numpy(valid_depth_mask.reshape(-1)).cuda()
+    return clipped_depth, depth_mask
 
 
 def crop_scene_points(mask_points, scene_points):
@@ -55,10 +57,32 @@ def turn_mask_to_point(dataset, scene_points, mask_image, frame_id):
     ids.sort()
     
     depth = dataset.get_depth(frame_id)
-    depth_mask = get_depth_mask(depth)
+    clipped_depth, depth_mask = prepare_depth_for_backprojection(depth)
 
-    colored_pcld = backproject(depth, intrinisc_cam_parameters, extrinsics)
-    view_points = np.asarray(colored_pcld.points)
+    colored_pcld = backproject(clipped_depth, intrinisc_cam_parameters, extrinsics)
+    view_points_raw = np.asarray(colored_pcld.points)
+    valid_depth_count = int(depth_mask.sum().item())
+    view_points = view_points_raw
+    removed_non_finite_points = 0
+    removed_zero_points = 0
+    if len(view_points_raw) != valid_depth_count:
+        finite_point_mask = np.isfinite(view_points_raw).all(axis=1)
+        removed_non_finite_points = int(len(view_points_raw) - np.count_nonzero(finite_point_mask))
+        view_points = view_points_raw[finite_point_mask]
+
+        non_zero_point_mask = np.any(np.abs(view_points) > 1e-8, axis=1)
+        removed_zero_points = int(len(view_points) - np.count_nonzero(non_zero_point_mask))
+        view_points = view_points[non_zero_point_mask]
+
+    if len(view_points) != valid_depth_count:
+        raise RuntimeError(
+            "Backprojected point count does not match valid depth mask size for "
+            f"frame {frame_id}: open3d_points_raw={len(view_points_raw)} open3d_points_filtered={len(view_points)} "
+            f"valid_depth_pixels={valid_depth_count} depth_trunc={DEPTH_TRUNC} "
+            f"depth_ge_trunc={int(np.count_nonzero(depth >= DEPTH_TRUNC))} "
+            f"depth_non_finite={int(np.count_nonzero(~np.isfinite(depth)))} "
+            f"removed_non_finite_points={removed_non_finite_points} removed_zero_points={removed_zero_points}"
+        )
 
     mask_points_list = []
     mask_points_num_list = []
