@@ -21,6 +21,91 @@ for Open-Vocabulary 3D Instance Segmentation</h1>
 Given an RGB-D scan and a reconstructed point cloud, MaskClustering leverages **multi-view verificatio**n to merge 2D instance masks in each frame into 3D instances, achieving strong zero-shot open-vocabulary 3D instance segmentation performance on the ScanNet, ScanNet++, and MatterPort3D datasets.
 ![teaser](./figs/teaser.png)
 
+# DEG Pixi Setup
+
+For the DEG integration in this repository, prefer the pixi-managed setup in this folder rather than the original manual installation steps below.
+
+## 1. Create the pixi environment
+
+From `dependencies/MaskClustering`:
+
+```bash
+pixi install
+```
+
+This environment includes the CUDA-enabled PyTorch, Detectron2, MMCV, Pytorch3D, and the local DEG package dependencies needed by `segment.py` / `segmenter.py`.
+
+## 2. Bootstrap CropFormer sources
+
+```bash
+pixi run bootstrap_cropformer
+```
+
+This clones the pinned `Entity` repository commit under:
+
+```text
+third_party/Entity/Entityv2/CropFormer
+```
+
+## 3. Build CropFormer native extensions
+
+```bash
+pixi run build_cropformer_ops
+```
+
+This builds the CropFormer ops in place inside the vendored CropFormer tree. The task is configured for the DEG integration and avoids user-local installs.
+
+## 4. Download the CropFormer checkpoint
+
+The checkpoint is gated on Hugging Face dataset access:
+
+- repo: `qqlu1992/Adobe_EntitySeg`
+- file: `CropFormer_model/Entity_Segmentation/Mask2Former_hornet_3x/Mask2Former_hornet_3x_576d0b.pth`
+
+You must be granted access first. Then provide a Hugging Face token via `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) and run:
+
+```bash
+HF_TOKEN=... pixi run download_cropformer_checkpoint
+```
+
+The checkpoint is stored at:
+
+```text
+checkpoints/cropformer/Mask2Former_hornet_3x_576d0b.pth
+```
+
+If preferred, place the checkpoint at that path manually.
+
+## 5. Verify the DEG wrapper entrypoint
+
+```bash
+pixi run --frozen segment_external --help
+```
+
+This is the DEG-facing CLI that consumes `Observations` and `SceneSetup` pickles and writes `objects_path: ...` on success.
+
+From the repository root, DEG launches the same wrapper via:
+
+```bash
+bash scripts/external_segmentation_initializers/maskclustering.sh --help
+```
+
+## Optional
+
+- Run the full class-agnostic benchmark pipeline:
+
+```bash
+pixi run class_agnostic_pipeline
+```
+
+- Enable DEG debug outputs for the external segmenter:
+
+```bash
+DEBUG_MASKCLUSTERING=1 pixi run --frozen segment_external --help
+```
+
+The original upstream installation and benchmark instructions remain below for reference, but the pixi tasks above are the supported setup path for the DEG integration in this repository.
+
 # Fast Demo
 Step 1: Install dependencies
 
