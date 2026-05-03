@@ -4,14 +4,40 @@ import argparse
 import glob
 import multiprocessing as mp
 import os
-import cv2
 import sys
-sys.path.insert(1, os.path.join(sys.path[0], '..'))
+from pathlib import Path
 
 import warnings
+
+import cv2
 import numpy as np
-from tqdm import tqdm
 import torch
+from tqdm import tqdm
+
+
+def get_default_cropformer_root() -> Path:
+    return Path(__file__).resolve().parent / 'third_party' / 'Entity' / 'Entityv2' / 'CropFormer'
+
+
+def configure_cropformer_imports() -> Path:
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument('--cropformer-root', type=Path)
+    known_args, _ = pre_parser.parse_known_args()
+
+    cropformer_root = (known_args.cropformer_root or get_default_cropformer_root()).resolve()
+    demo_root = cropformer_root / 'demo_cropformer'
+
+    if not cropformer_root.exists():
+        raise FileNotFoundError(f'CropFormer root not found: {cropformer_root}')
+    if not demo_root.exists():
+        raise FileNotFoundError(f'CropFormer demo directory not found: {demo_root}')
+
+    sys.path.insert(1, str(demo_root))
+    sys.path.insert(1, str(cropformer_root))
+    return cropformer_root
+
+
+CROPFORMER_ROOT = configure_cropformer_imports()
 
 from detectron2.config import get_cfg
 from detectron2.data.detection_utils import read_image
@@ -34,6 +60,12 @@ def setup_cfg(args):
 
 def get_parser():
     parser = argparse.ArgumentParser(description="maskformer2 demo for builtin configs")
+    parser.add_argument(
+        "--cropformer-root",
+        type=Path,
+        default=CROPFORMER_ROOT,
+        help="Path to the upstream CropFormer source tree.",
+    )
     parser.add_argument(
         "--config-file",
         default="configs/coco/panoptic-segmentation/maskformer2_R50_bs16_50ep.yaml",
