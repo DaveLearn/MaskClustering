@@ -40,7 +40,14 @@ def crop_scene_points(mask_points, scene_points):
     y_min, y_max = torch.min(mask_points[:, 1]), torch.max(mask_points[:, 1])
     z_min, z_max = torch.min(mask_points[:, 2]), torch.max(mask_points[:, 2])
 
-    selected_point_mask = (scene_points[:, 0] > x_min) & (scene_points[:, 0] < x_max) & (scene_points[:, 1] > y_min) & (scene_points[:, 1] < y_max) & (scene_points[:, 2] > z_min) & (scene_points[:, 2] < z_max)
+    selected_point_mask = (
+        (scene_points[:, 0] > x_min)
+        & (scene_points[:, 0] < x_max)
+        & (scene_points[:, 1] > y_min)
+        & (scene_points[:, 1] < y_max)
+        & (scene_points[:, 2] > z_min)
+        & (scene_points[:, 2] < z_max)
+    )
     selected_point_ids = torch.where(selected_point_mask)[0]
     cropped_scene_points = scene_points[selected_point_ids]
     return cropped_scene_points, selected_point_ids

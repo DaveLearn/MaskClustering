@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 import random
 import sys
@@ -26,6 +27,11 @@ from utils.config import DEFAULT_CROPFORMER_CHECKPOINT, DEFAULT_CROPFORMER_CONFI
 
 
 DEFAULT_SEED = 0
+
+
+def _env_flag_enabled(name: str) -> bool:
+    value = os.environ.get(name, "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -78,6 +84,8 @@ def run() -> None:
     logger.addHandler(ch)
 
     args = tyro.cli(Args)
+    env_debug = _env_flag_enabled("DEBUG_MASKCLUSTERING")
+    debug_enabled = args.debug or env_debug
 
     random.seed(DEFAULT_SEED)
     np.random.seed(DEFAULT_SEED)
@@ -91,6 +99,8 @@ def run() -> None:
         logger.info("--------------")
         logger.info("Starting MaskClustering initialization")
         logger.info("params: %s", args)
+        if env_debug and not args.debug:
+            logger.info("Enabling debug output from DEBUG_MASKCLUSTERING=1")
         logger.info("Determinism enabled with seed=%d", DEFAULT_SEED)
 
         logger.info("Loading observations from %s ...", args.observations_path)
@@ -123,7 +133,7 @@ def run() -> None:
             view_consensus_threshold=args.view_consensus_threshold,
             contained_threshold=args.contained_threshold,
             point_filter_threshold=args.point_filter_threshold,
-            debug=args.debug,
+            debug=debug_enabled,
         )
 
         output_path = output_dir / "objectsdef.pkl"

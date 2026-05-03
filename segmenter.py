@@ -7,6 +7,7 @@ DEG external segmenter contract.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import math
 import os
@@ -28,6 +29,7 @@ from graph.iterative_clustering import iterative_clustering
 from initializerdefs import InstanceMaskObjectsDef, ObjectSegmentations, ObservationFrame, Observations, SceneSetup
 from psdframe import Frame
 from utils.config import DEFAULT_CROPFORMER_CHECKPOINT, DEFAULT_CROPFORMER_CONFIG, DEFAULT_CROPFORMER_ROOT
+from utils.mask_backprojection import frame_backprojection
 from utils.post_process import dbscan_process, filter_point, find_represent_mask, merge_overlapping_objects
 
 
@@ -110,6 +112,165 @@ class TempScanNetDataset:
 
     def get_scene_points(self) -> np.ndarray:
         return self.scene_points
+
+
+def _safe_file_stem(name: str) -> str:
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+    cleaned = "".join(ch if ch in allowed else "_" for ch in name)
+    cleaned = cleaned.strip("_")
+    return cleaned or "frame"
+
+
+def _rgb_to_uint8(rgb: np.ndarray) -> np.ndarray:
+    if rgb.dtype == np.uint8:
+        return rgb
+    return (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def _label_color(label_id: int) -> np.ndarray:
+    if label_id <= 0:
+        return np.zeros(3, dtype=np.uint8)
+    return np.array(
+        [
+            ((label_id * 37) % 191) + 64,
+            ((label_id * 67) % 191) + 64,
+            ((label_id * 97) % 191) + 64,
+        ],
+        dtype=np.uint8,
+    )
+
+
+def _colorize_label_mask(mask: np.ndarray) -> np.ndarray:
+    colorized = np.zeros(mask.shape + (3,), dtype=np.uint8)
+    for label_id in np.unique(mask):
+        if int(label_id) <= 0:
+            continue
+        colorized[mask == label_id] = _label_color(int(label_id))
+    return colorized
+
+
+def _overlay_label_mask(rgb_uint8: np.ndarray, mask: np.ndarray, alpha: float = 0.55) -> np.ndarray:
+    colorized = _colorize_label_mask(mask)
+    overlay = rgb_uint8.copy()
+    labeled = mask > 0
+    if np.any(labeled):
+        blended = ((1.0 - alpha) * rgb_uint8.astype(np.float32) + alpha * colorized.astype(np.float32)).astype(np.uint8)
+        overlay[labeled] = blended[labeled]
+    return overlay
+
+
+def _write_mask_visualization(out_dir: Path, frame_name: str, rgb_uint8: np.ndarray, mask: np.ndarray) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = _safe_file_stem(frame_name)
+    colorized = _colorize_label_mask(mask)
+    overlay = _overlay_label_mask(rgb_uint8, mask)
+    cv2.imwrite(str(out_dir / f"{stem}_rgb.png"), cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(str(out_dir / f"{stem}_ids.png"), mask.astype(np.uint16))
+    cv2.imwrite(str(out_dir / f"{stem}_mask.png"), cv2.cvtColor(colorized, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(str(out_dir / f"{stem}_overlay.png"), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+
+
+def _project_world_points_to_pixels(frame: Frame, world_points: np.ndarray) -> np.ndarray:
+    if len(world_points) == 0:
+        return np.empty((0, 2), dtype=np.int32)
+
+    world_from_view = frame.X_WV_opencv.cpu().numpy()
+    view_from_world = np.linalg.inv(world_from_view)
+    homogeneous_points = np.concatenate([world_points, np.ones((len(world_points), 1), dtype=np.float32)], axis=1)
+    camera_points = (view_from_world @ homogeneous_points.T).T[:, :3]
+
+    valid = np.isfinite(camera_points).all(axis=1) & (camera_points[:, 2] > 1e-6)
+    if not np.any(valid):
+        return np.empty((0, 2), dtype=np.int32)
+
+    camera_points = camera_points[valid]
+    u = frame.fl_x * camera_points[:, 0] / camera_points[:, 2] + frame.cx
+    v = frame.fl_y * camera_points[:, 1] / camera_points[:, 2] + frame.cy
+    pixels = np.stack([u, v], axis=1)
+    inside = (
+        np.isfinite(pixels).all(axis=1)
+        & (pixels[:, 0] >= 0)
+        & (pixels[:, 0] < frame.w)
+        & (pixels[:, 1] >= 0)
+        & (pixels[:, 1] < frame.h)
+    )
+    if not np.any(inside):
+        return np.empty((0, 2), dtype=np.int32)
+
+    return np.round(pixels[inside]).astype(np.int32)
+
+
+def _rasterize_projected_pixels(height: int, width: int, pixels: np.ndarray, dilation: int = 2) -> np.ndarray:
+    raster = np.zeros((height, width), dtype=np.uint8)
+    if len(pixels) == 0:
+        return raster
+
+    raster[pixels[:, 1], pixels[:, 0]] = 255
+    kernel_size = max(1, 2 * dilation + 1)
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    return cv2.dilate(raster, kernel, iterations=1)
+
+
+def _save_projection_check_visualizations(
+    debug_dir: Path,
+    dataset: TempScanNetDataset,
+    frames: Sequence[Frame],
+    scene_points: np.ndarray,
+    max_frames: int = 6,
+) -> None:
+    out_dir = debug_dir / "projection_checks"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scene_points_tensor = torch.tensor(scene_points).float().cuda()
+
+    for frame_id, frame in enumerate(frames[:max_frames]):
+        mask_image = dataset.get_segmentation(frame_id, align_with_depth=True)
+        mask_dict, _ = frame_backprojection(dataset, scene_points_tensor, frame_id)
+
+        rgb_uint8 = _rgb_to_uint8(frame.color.cpu().numpy())
+        colorized_mask = _colorize_label_mask(mask_image)
+        projection_overlay = rgb_uint8.copy()
+        agreement_panel = np.zeros_like(rgb_uint8)
+
+        for mask_id, point_ids in sorted(mask_dict.items()):
+            label_mask = (mask_image == mask_id).astype(np.uint8)
+            contours, _ = cv2.findContours(label_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            color = tuple(int(channel) for channel in _label_color(int(mask_id)).tolist())
+            if contours:
+                cv2.drawContours(projection_overlay, contours, -1, color, 2)
+
+            projected_pixels = _project_world_points_to_pixels(frame, scene_points[np.array(sorted(point_ids), dtype=np.int32)])
+            if len(projected_pixels) > 0:
+                stride = max(1, len(projected_pixels) // 6000)
+                projected_pixels = projected_pixels[::stride]
+                projected_raster = _rasterize_projected_pixels(frame.h, frame.w, projected_pixels, dilation=1) > 0
+                projection_overlay[projected_raster] = np.array(color, dtype=np.uint8)
+            else:
+                projected_raster = np.zeros((frame.h, frame.w), dtype=bool)
+
+            label_mask_bool = label_mask.astype(bool)
+            support_in_mask = label_mask_bool & projected_raster
+            mask_without_support = label_mask_bool & ~projected_raster
+            support_outside_mask = projected_raster & ~label_mask_bool
+
+            agreement_panel[mask_without_support] = np.array([255, 0, 0], dtype=np.uint8)
+            agreement_panel[support_in_mask] = np.array([0, 255, 0], dtype=np.uint8)
+            agreement_panel[support_outside_mask] = np.array([0, 128, 255], dtype=np.uint8)
+
+        cv2.putText(agreement_panel, "green: support in mask", (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(agreement_panel, "red: mask w/o support", (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 0), 1, cv2.LINE_AA)
+        cv2.putText(agreement_panel, "blue: support outside", (12, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 128, 255), 1, cv2.LINE_AA)
+
+        composite = np.concatenate([rgb_uint8, colorized_mask, agreement_panel], axis=1)
+        stem = _safe_file_stem(frame.name)
+        cv2.imwrite(str(out_dir / f"{stem}_projection_overlay.png"), cv2.cvtColor(projection_overlay, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(str(out_dir / f"{stem}_projection_agreement.png"), cv2.cvtColor(agreement_panel, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(str(out_dir / f"{stem}_projection_check.png"), cv2.cvtColor(composite, cv2.COLOR_RGB2BGR))
+
+
+def _save_run_summary(debug_dir: Path, summary: Dict[str, object]) -> None:
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    with (debug_dir / "run_summary.json").open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True)
 
 
 def get_dataset_frame_from_observation_frame(observation_frame: ObservationFrame) -> Frame:
@@ -573,10 +734,13 @@ def _build_instance_groups_from_clustered_masks(
     export_to_frame: Dict[int, ObservationFrame],
     frames: Sequence[Frame],
     workspace_voxels: o3d.geometry.VoxelGrid,
+    workspace_masks: Optional[Dict[int, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
     export_frame_ids = sorted(export_to_frame)
     segmentation_images = {frame_id: dataset.get_segmentation(frame_id, align_with_depth=True) for frame_id in export_frame_ids}
-    workspace_masks = {frame_id: _compute_workspace_pixel_mask(frames[frame_id], workspace_voxels) for frame_id in export_frame_ids}
+    workspace_masks = workspace_masks or {
+        frame_id: _compute_workspace_pixel_mask(frames[frame_id], workspace_voxels) for frame_id in export_frame_ids
+    }
     result_by_export: Dict[int, np.ndarray] = {
         frame_id: np.zeros_like(segmentation_images[frame_id], dtype=np.int32) for frame_id in export_frame_ids
     }
@@ -635,8 +799,14 @@ def initialize_scene(
     else:
         work_root = Path(tempfile.mkdtemp(prefix="maskclustering_"))
     work_root.mkdir(parents=True, exist_ok=True)
+    debug_dir = intermediate_outputs_path / "debug" if (debug and intermediate_outputs_path is not None) else None
+    run_summary: Dict[str, object] = {
+        "frame_count": len(frames),
+        "scene_id": None,
+    }
 
     scene_id = _sanitize_scene_id(observations.id or "scene")
+    run_summary["scene_id"] = scene_id
     temp_scene = _write_scannet_temp_dataset(frames, scene_id, mesh, work_root)
 
     _run_cropformer_prediction(
@@ -651,6 +821,34 @@ def initialize_scene(
     if len(scene_points) == 0:
         raise RuntimeError("No mesh vertices remain after workspace cropping")
     dataset = TempScanNetDataset(temp_scene.scene_dir, scene_points=scene_points, image_size=(frames[0].w, frames[0].h))
+    workspace_masks_by_frame = {
+        frame_id: _compute_workspace_pixel_mask(frames[frame_id], workspace_voxels) for frame_id in sorted(temp_scene.export_to_frame)
+    }
+
+    if debug_dir is not None:
+        raw_mask_counts: Dict[str, int] = {}
+        workspace_mask_counts: Dict[str, int] = {}
+        workspace_visible_pixels: Dict[str, int] = {}
+        for frame_id in sorted(temp_scene.export_to_frame):
+            frame = frames[frame_id]
+            frame_name = frame.name
+            rgb_uint8 = _rgb_to_uint8(frame.color.cpu().numpy())
+            raw_mask = dataset.get_segmentation(frame_id, align_with_depth=True)
+            raw_mask_counts[frame_name] = int(len(np.unique(raw_mask[raw_mask > 0])))
+            _write_mask_visualization(debug_dir / "cropformer_masks_raw", frame_name, rgb_uint8, raw_mask)
+
+            workspace_mask = workspace_masks_by_frame[frame_id]
+            workspace_masked = raw_mask.copy()
+            workspace_masked[~workspace_mask] = 0
+            workspace_mask_counts[frame_name] = int(len(np.unique(workspace_masked[workspace_masked > 0])))
+            workspace_visible_pixels[frame_name] = int(np.count_nonzero(workspace_mask))
+            _write_mask_visualization(debug_dir / "cropformer_masks_workspace", frame_name, rgb_uint8, workspace_masked)
+
+        _save_projection_check_visualizations(debug_dir, dataset, frames, scene_points)
+        run_summary["cropformer_raw_mask_count_by_frame"] = raw_mask_counts
+        run_summary["cropformer_workspace_mask_count_by_frame"] = workspace_mask_counts
+        run_summary["workspace_visible_pixels_by_frame"] = workspace_visible_pixels
+
     clustering_args = _build_clustering_args(
         step=step,
         mask_visible_threshold=mask_visible_threshold,
@@ -663,6 +861,7 @@ def initialize_scene(
     clustered_objects = _cluster_objects(dataset, clustering_args)
     if len(clustered_objects) == 0:
         raise RuntimeError("MaskClustering produced no clustered objects")
+    run_summary["clustered_object_count"] = len(clustered_objects)
 
     _save_object_dict(clustered_objects, work_root / "object_dict.npy")
     instance_groups = _build_instance_groups_from_clustered_masks(
@@ -671,13 +870,27 @@ def initialize_scene(
         temp_scene.export_to_frame,
         frames,
         workspace_voxels,
+        workspace_masks=workspace_masks_by_frame,
     )
+    pre_filter_instance_groups = {frame_name: mask.copy() for frame_name, mask in instance_groups.items()}
 
     all_label_ids = np.array(
         sorted({int(label_id) for mask in instance_groups.values() for label_id in np.unique(mask) if label_id > 0}),
         dtype=np.int32,
     )
     all_label_ids = all_label_ids[all_label_ids > 0]
+    run_summary["pre_filter_instance_count"] = int(len(all_label_ids))
+    run_summary["pre_filter_instance_count_by_frame"] = {
+        frame_name: int(len(np.unique(mask[mask > 0]))) for frame_name, mask in pre_filter_instance_groups.items()
+    }
+
+    if debug_dir is not None:
+        for frame in frames:
+            mask = pre_filter_instance_groups.get(frame.name)
+            if mask is None:
+                continue
+            _write_mask_visualization(debug_dir / "instance_masks_pre_filter", frame.name, _rgb_to_uint8(frame.color.cpu().numpy()), mask)
+
     frame_counts = {label_id: 0 for label_id in all_label_ids}
     for mask in instance_groups.values():
         for label_id in all_label_ids:
@@ -685,11 +898,13 @@ def initialize_scene(
                 frame_counts[label_id] += 1
 
     valid_ids = np.array([label_id for label_id, count in frame_counts.items() if count >= 3], dtype=np.int32)
+    run_summary["post_min_frame_filter_instance_count"] = int(len(valid_ids))
     logger.info("Labels in >= 3 frames: %d / %d", len(valid_ids), len(all_label_ids))
     for frame_name in instance_groups:
         instance_groups[frame_name][~np.isin(instance_groups[frame_name], valid_ids)] = 0
 
     table_id = determine_table_instance_id(frames, instance_groups, scene.ground_plane, valid_ids)
+    run_summary["table_instance_id"] = int(table_id)
     logger.info("Table instance id: %d", table_id)
     if table_id > 0:
         valid_ids = valid_ids[valid_ids != table_id]
@@ -698,6 +913,7 @@ def initialize_scene(
 
     for frame_name in instance_groups:
         instance_groups[frame_name][~np.isin(instance_groups[frame_name], valid_ids)] = 0
+    run_summary["final_instance_count"] = int(len(valid_ids))
 
     frame_ids: List[int] = []
     pixel_masks: List[np.ndarray] = []
@@ -712,6 +928,9 @@ def initialize_scene(
         pixel_masks.append(mask)
         if results_path is not None:
             cv2.imwrite(str(results_path / f"{obs_frame.name}.png"), mask.astype(np.uint16))
+
+    if debug_dir is not None:
+        _save_run_summary(debug_dir, run_summary)
 
     instance_mask_objects = InstanceMaskObjectsDef(frame_ids=frame_ids, pixel_object_ids=pixel_masks)
     logger.info("Initialized %d objects (after table removal)", len(valid_ids))
