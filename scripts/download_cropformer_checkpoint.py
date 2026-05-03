@@ -11,7 +11,7 @@ from huggingface_hub.errors import GatedRepoError
 
 
 DEFAULT_REPO_ID = "qqlu1992/Adobe_EntitySeg"
-DEFAULT_REPO_FILE = "CropFormer_model/Entity_Segmentation/Mask2Former_hornet_3x_576d0b.pth"
+DEFAULT_REPO_FILE = "CropFormer_model/Entity_Segmentation/Mask2Former_hornet_3x/Mask2Former_hornet_3x_576d0b.pth"
 
 
 def parse_args() -> argparse.Namespace:
