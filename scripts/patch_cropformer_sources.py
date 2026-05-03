@@ -5,6 +5,12 @@ from pathlib import Path
 
 
 PATCHES = {
+    "make.sh": [
+        (
+            "python setup.py build install",
+            "set -euo pipefail\n\nexport PYTHONNOUSERSITE=1\n\nrm -rf build\nrm -rf MultiScaleDeformableAttention.egg-info\nrm -f MultiScaleDeformableAttention*.so\n\npython setup.py build_ext --inplace",
+        ),
+    ],
     "src/ms_deform_attn.h": [
         ("value.type().is_cuda()", "value.is_cuda()"),
     ],

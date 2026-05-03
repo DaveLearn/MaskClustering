@@ -444,10 +444,12 @@ def _run_cropformer_prediction(
         str(cropformer_checkpoint),
     ]
     logger.info("Running CropFormer prediction: %s", " ".join(cmd))
+    env = os.environ.copy()
+    env["PYTHONNOUSERSITE"] = "1"
     result = subprocess.run(
         cmd,
         cwd=str(project_root),
-        env=os.environ.copy(),
+        env=env,
         stdout=sys.stderr,
         stderr=sys.stderr,
         check=False,

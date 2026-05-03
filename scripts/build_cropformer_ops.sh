@@ -7,6 +7,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_CROPFORMER_ROOT="${PROJECT_ROOT}/third_party/Entity/Entityv2/CropFormer"
 CROPFORMER_ROOT="${CROPFORMER_ROOT:-${DEFAULT_CROPFORMER_ROOT}}"
 CUDA_HOME="${CUDA_HOME:-${CONDA_PREFIX:-}}"
+export PYTHONNOUSERSITE=1
+unset TORCH_CUDA_ARCH_LIST
 
 if [[ ! -d "${CROPFORMER_ROOT}" ]]; then
     printf 'CropFormer root not found: %s\n' "${CROPFORMER_ROOT}" >&2
@@ -20,9 +22,11 @@ if [[ -z "${CUDA_HOME}" || ! -d "${CUDA_HOME}" ]]; then
 fi
 
 export CUDA_HOME
+printf 'Ignoring inherited TORCH_CUDA_ARCH_LIST and using torch auto-detected CUDA architecture flags\n'
 
 ENTITY_API_DIR="${CROPFORMER_ROOT}/entity_api/PythonAPI"
 OPS_DIR="${CROPFORMER_ROOT}/mask2former/modeling/pixel_decoder/ops"
+SITE_PACKAGES_DIR="$(python -c "import site; print(next(path for path in site.getsitepackages() if path.endswith('site-packages')))")"
 
 if [[ ! -d "${ENTITY_API_DIR}" || ! -d "${OPS_DIR}" ]]; then
     printf 'CropFormer source tree is incomplete under %s\n' "${CROPFORMER_ROOT}" >&2
@@ -31,6 +35,15 @@ fi
 
 python "${PROJECT_ROOT}/scripts/patch_cropformer_sources.py" "${CROPFORMER_ROOT}"
 make -C "${ENTITY_API_DIR}"
-(cd "${OPS_DIR}" && bash make.sh)
+
+rm -rf "${OPS_DIR}/build"
+rm -rf "${OPS_DIR}/MultiScaleDeformableAttention.egg-info"
+rm -f "${OPS_DIR}"/MultiScaleDeformableAttention*.so
+rm -rf "${SITE_PACKAGES_DIR}"/MultiScaleDeformableAttention*.egg-info
+rm -f "${SITE_PACKAGES_DIR}"/MultiScaleDeformableAttention*.so
+
+(cd "${OPS_DIR}" && python setup.py build_ext --inplace)
+
+PYTHONPATH="${OPS_DIR}:${PYTHONPATH:-}" python -c "from pathlib import Path; import MultiScaleDeformableAttention; built = Path(MultiScaleDeformableAttention.__file__).resolve(); expected = Path('${OPS_DIR}').resolve(); print(built); assert expected in built.parents, f'expected in-tree extension under {expected}, got {built}'"
 
 printf 'CropFormer ops built under %s\n' "${CROPFORMER_ROOT}"

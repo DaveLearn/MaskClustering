@@ -4,6 +4,7 @@ import argparse
 import glob
 import multiprocessing as mp
 import os
+import site
 import sys
 from pathlib import Path
 
@@ -26,12 +27,24 @@ def configure_cropformer_imports() -> Path:
 
     cropformer_root = (known_args.cropformer_root or get_default_cropformer_root()).resolve()
     demo_root = cropformer_root / 'demo_cropformer'
+    ops_root = cropformer_root / 'mask2former' / 'modeling' / 'pixel_decoder' / 'ops'
 
     if not cropformer_root.exists():
         raise FileNotFoundError(f'CropFormer root not found: {cropformer_root}')
     if not demo_root.exists():
         raise FileNotFoundError(f'CropFormer demo directory not found: {demo_root}')
+    if not ops_root.exists():
+        raise FileNotFoundError(f'CropFormer ops directory not found: {ops_root}')
 
+    user_site_root = Path(site.getusersitepackages()).resolve()
+
+    def is_user_site_path(path: str) -> bool:
+        resolved = Path(path).resolve()
+        return resolved == user_site_root or user_site_root in resolved.parents
+
+    sys.path = [path for path in sys.path if not is_user_site_path(path)]
+
+    sys.path.insert(1, str(ops_root))
     sys.path.insert(1, str(demo_root))
     sys.path.insert(1, str(cropformer_root))
     return cropformer_root
