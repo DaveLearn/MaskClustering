@@ -11,6 +11,7 @@ dependencies = [
     "submitit>=1.5.3,<2",
     "timm>=1.0.22,<2",
     "tqdm>=4.67.1,<5",
+    "tyro>=0.9.35,<1",
 ]
 
 [build-system]
@@ -36,6 +37,7 @@ h5py = ">=3.14.0,<4"
 make = ">=4.4.1,<5"
 mmcv = { version = "==2.2.0", build = "*cuda129py311*" }
 ninja = ">=1.13.0,<2"
+numpy = "1.26.*"
 open3d = ">=0.19.0,<0.20"
 opencv = ">=4.11.0,<5"
 pip = ">=25.2,<26"
@@ -48,10 +50,18 @@ shapely = ">=2.1.2,<3"
 torchvision = { version = "==0.26.0", build = "*cuda129_py311*" }
 wheel = ">=0.47.0,<0.48"
 
+[tool.pixi.pypi-dependencies]
+psdframe = { path = "../../packages/psdframe", editable = true }
+initializerdefs = { path = "../../packages/initializerdefs", editable = true }
+
+[tool.pixi.pypi-options.dependency-overrides]
+numpy = "<2.0"
+
 [tool.pixi.tasks]
 bootstrap_cropformer = "bash scripts/bootstrap_cropformer.sh"
 build_cropformer_ops = { cmd = "bash scripts/build_cropformer_ops.sh", depends-on = ["bootstrap_cropformer"] }
 download_cropformer_checkpoint = "python scripts/download_cropformer_checkpoint.py"
+segment_external = "python segment.py"
 predict_masks = { cmd = "bash scripts/run_maskclustering_task.sh predict", depends-on = ["build_cropformer_ops", "download_cropformer_checkpoint"] }
 cluster = "bash scripts/run_maskclustering_task.sh cluster"
 evaluate_class_agnostic = "bash scripts/run_maskclustering_task.sh evaluate"
