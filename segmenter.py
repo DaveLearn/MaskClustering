@@ -187,21 +187,31 @@ def _project_world_points_to_pixels(frame: Frame, world_points: np.ndarray) -> n
     u = frame.fl_x * camera_points[:, 0] / camera_points[:, 2] + frame.cx
     v = frame.fl_y * camera_points[:, 1] / camera_points[:, 2] + frame.cy
     pixels = np.stack([u, v], axis=1)
+    pixels_int = np.round(pixels).astype(np.int32)
     inside = (
         np.isfinite(pixels).all(axis=1)
-        & (pixels[:, 0] >= 0)
-        & (pixels[:, 0] < frame.w)
-        & (pixels[:, 1] >= 0)
-        & (pixels[:, 1] < frame.h)
+        & (pixels_int[:, 0] >= 0)
+        & (pixels_int[:, 0] < frame.w)
+        & (pixels_int[:, 1] >= 0)
+        & (pixels_int[:, 1] < frame.h)
     )
     if not np.any(inside):
         return np.empty((0, 2), dtype=np.int32)
 
-    return np.round(pixels[inside]).astype(np.int32)
+    return pixels_int[inside]
 
 
 def _rasterize_projected_pixels(height: int, width: int, pixels: np.ndarray, dilation: int = 2) -> np.ndarray:
     raster = np.zeros((height, width), dtype=np.uint8)
+    if len(pixels) == 0:
+        return raster
+
+    pixels = pixels[
+        (pixels[:, 0] >= 0)
+        & (pixels[:, 0] < width)
+        & (pixels[:, 1] >= 0)
+        & (pixels[:, 1] < height)
+    ]
     if len(pixels) == 0:
         return raster
 
@@ -271,6 +281,78 @@ def _save_run_summary(debug_dir: Path, summary: Dict[str, object]) -> None:
     debug_dir.mkdir(parents=True, exist_ok=True)
     with (debug_dir / "run_summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
+
+
+def _mask_trace_record_is_relevant(trace: Dict[str, object]) -> bool:
+    workspace_pixels = int(trace.get("workspace_pixels", 0))
+    if workspace_pixels <= 0:
+        return False
+
+    coverage = trace.get("coverage")
+    if trace.get("backprojection") == "low_coverage" and coverage is not None and float(coverage) <= 0.0:
+        return False
+
+    return True
+
+
+def _save_mask_trace(debug_dir: Path, mask_trace: Dict[int, Dict[int, Dict[str, object]]], frames: Sequence[Frame]) -> None:
+    records: List[Dict[str, object]] = []
+    for frame_id, frame_masks in sorted(mask_trace.items()):
+        frame_name = frames[frame_id].name if 0 <= frame_id < len(frames) else str(frame_id)
+        for mask_id, trace in sorted(frame_masks.items()):
+            if not _mask_trace_record_is_relevant(trace):
+                continue
+
+            workspace_pixels = int(trace.get("workspace_pixels", 0))
+            coverage = trace.get("coverage")
+            record = {
+                "frame_name": frame_name,
+                "mask_id": int(mask_id),
+                "workspace_pixels": workspace_pixels,
+                "backprojection": trace.get("backprojection", "not_entered"),
+                "graph": trace.get("graph", "not_entered"),
+                "final_status": trace.get("final_status", "unknown"),
+            }
+            if coverage is not None:
+                record["coverage"] = float(coverage)
+            if "scene_support_points" in trace:
+                record["scene_support_points"] = int(trace["scene_support_points"])
+            if "visible_views" in trace:
+                record["visible_views"] = int(trace["visible_views"])
+            if "split_views" in trace:
+                record["split_views"] = int(trace["split_views"])
+            records.append(record)
+
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    with (debug_dir / "mask_trace.json").open("w", encoding="utf-8") as handle:
+        json.dump(records, handle, indent=2, sort_keys=True)
+
+
+def _save_mask_trace_masks(
+    debug_dir: Path,
+    mask_trace: Dict[int, Dict[int, Dict[str, object]]],
+    frames: Sequence[Frame],
+    dataset: TempScanNetDataset,
+    workspace_masks_by_frame: Dict[int, np.ndarray],
+) -> None:
+    out_dir = debug_dir / "mask_trace_masks"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for frame_id, frame_masks in sorted(mask_trace.items()):
+        if not (0 <= frame_id < len(frames)):
+            continue
+        frame_name = frames[frame_id].name
+        segmentation = dataset.get_segmentation(frame_id, align_with_depth=True).copy()
+        workspace_mask = workspace_masks_by_frame.get(frame_id)
+        if workspace_mask is not None:
+            segmentation[~workspace_mask] = 0
+
+        for mask_id, trace in sorted(frame_masks.items()):
+            if not _mask_trace_record_is_relevant(trace):
+                continue
+            binary_mask = (segmentation == int(mask_id)).astype(np.uint8) * 255
+            stem = f"{_safe_file_stem(frame_name)}_mask_{int(mask_id)}"
+            cv2.imwrite(str(out_dir / f"{stem}.png"), binary_mask)
 
 
 def get_dataset_frame_from_observation_frame(observation_frame: ObservationFrame) -> Frame:
@@ -639,13 +721,19 @@ def _build_clustering_args(
     )
 
 
-def _cluster_objects(dataset: TempScanNetDataset, args: SimpleNamespace) -> List[ClusteredObject]:
+def _cluster_objects(
+    dataset: TempScanNetDataset,
+    args: SimpleNamespace,
+    mask_trace: Optional[Dict[int, Dict[int, Dict[str, object]]]] = None,
+) -> List[ClusteredObject]:
     scene_points = dataset.get_scene_points()
     frame_list = dataset.get_frame_list(args.step)
     if not frame_list:
         raise RuntimeError("No frames available for MaskClustering")
 
-    nodes, observer_num_thresholds, mask_point_clouds, point_frame_matrix = mask_graph_construction(args, scene_points, frame_list, dataset)
+    nodes, observer_num_thresholds, mask_point_clouds, point_frame_matrix = mask_graph_construction(
+        args, scene_points, frame_list, dataset, mask_trace=mask_trace
+    )
     object_list = iterative_clustering(nodes, observer_num_thresholds, args.view_consensus_threshold, args.debug)
 
     total_point_ids_list: List[np.ndarray] = []
@@ -653,6 +741,11 @@ def _cluster_objects(dataset: TempScanNetDataset, args: SimpleNamespace) -> List
     total_mask_list: List[List[Tuple[int, int, float]]] = []
     for node in object_list:
         if len(node.mask_list) < 2:
+            if mask_trace is not None:
+                for frame_id, mask_id in node.mask_list:
+                    trace = mask_trace.setdefault(frame_id, {}).setdefault(mask_id, {})
+                    if trace.get("graph") == "kept":
+                        trace["final_status"] = "dropped_cluster_single_mask"
             continue
 
         pcld, point_ids = node.get_point_cloud(scene_points)
@@ -669,6 +762,11 @@ def _cluster_objects(dataset: TempScanNetDataset, args: SimpleNamespace) -> List
         total_point_ids_list.extend(point_ids_list)
         total_bbox_list.extend(bbox_list)
         total_mask_list.extend(mask_list)
+        if mask_trace is not None and len(mask_list) == 0:
+            for frame_id, mask_id in node.mask_list:
+                trace = mask_trace.setdefault(frame_id, {}).setdefault(mask_id, {})
+                if trace.get("graph") == "kept":
+                    trace["final_status"] = "dropped_postprocess"
 
     total_point_ids_list, total_mask_list = merge_overlapping_objects(
         total_point_ids_list,
@@ -678,7 +776,9 @@ def _cluster_objects(dataset: TempScanNetDataset, args: SimpleNamespace) -> List
     )
 
     clustered_objects: List[ClusteredObject] = []
+    kept_masks: set[Tuple[int, int]] = set()
     for point_ids, mask_list in zip(total_point_ids_list, total_mask_list):
+        kept_masks.update((int(frame_id), int(mask_id)) for frame_id, mask_id, _ in mask_list)
         clustered_objects.append(
             ClusteredObject(
                 point_ids=np.asarray(point_ids, dtype=np.int32),
@@ -686,6 +786,21 @@ def _cluster_objects(dataset: TempScanNetDataset, args: SimpleNamespace) -> List
                 repre_mask_list=find_represent_mask(list(mask_list)),
             )
         )
+
+    if mask_trace is not None:
+        for frame_id, frame_masks in mask_trace.items():
+            for mask_id, trace in frame_masks.items():
+                mask_key = (int(frame_id), int(mask_id))
+                if mask_key in kept_masks:
+                    trace["final_status"] = "kept_pre_filter_instance"
+                elif trace.get("final_status") in {"dropped_cluster_single_mask", "dropped_postprocess"}:
+                    continue
+                elif trace.get("graph") == "kept":
+                    trace["final_status"] = "dropped_postprocess"
+                elif trace.get("backprojection") == "kept":
+                    trace["final_status"] = "dropped_graph"
+                else:
+                    trace["final_status"] = "dropped_backprojection"
 
     return clustered_objects
 
@@ -824,6 +939,7 @@ def initialize_scene(
     workspace_masks_by_frame = {
         frame_id: _compute_workspace_pixel_mask(frames[frame_id], workspace_voxels) for frame_id in sorted(temp_scene.export_to_frame)
     }
+    mask_trace: Dict[int, Dict[int, Dict[str, object]]] = {}
 
     if debug_dir is not None:
         raw_mask_counts: Dict[str, int] = {}
@@ -840,6 +956,11 @@ def initialize_scene(
             workspace_mask = workspace_masks_by_frame[frame_id]
             workspace_masked = raw_mask.copy()
             workspace_masked[~workspace_mask] = 0
+            frame_trace = mask_trace.setdefault(frame_id, {})
+            for mask_id in np.unique(workspace_masked):
+                if int(mask_id) <= 0:
+                    continue
+                frame_trace.setdefault(int(mask_id), {})["workspace_pixels"] = int(np.count_nonzero(workspace_masked == mask_id))
             workspace_mask_counts[frame_name] = int(len(np.unique(workspace_masked[workspace_masked > 0])))
             workspace_visible_pixels[frame_name] = int(np.count_nonzero(workspace_mask))
             _write_mask_visualization(debug_dir / "cropformer_masks_workspace", frame_name, rgb_uint8, workspace_masked)
@@ -858,7 +979,7 @@ def initialize_scene(
         point_filter_threshold=point_filter_threshold,
         debug=debug,
     )
-    clustered_objects = _cluster_objects(dataset, clustering_args)
+    clustered_objects = _cluster_objects(dataset, clustering_args, mask_trace=mask_trace if debug_dir is not None else None)
     if len(clustered_objects) == 0:
         raise RuntimeError("MaskClustering produced no clustered objects")
     run_summary["clustered_object_count"] = len(clustered_objects)
@@ -931,6 +1052,8 @@ def initialize_scene(
 
     if debug_dir is not None:
         _save_run_summary(debug_dir, run_summary)
+        _save_mask_trace(debug_dir, mask_trace, frames)
+        _save_mask_trace_masks(debug_dir, mask_trace, frames, dataset, workspace_masks_by_frame)
 
     instance_mask_objects = InstanceMaskObjectsDef(frame_ids=frame_ids, pixel_object_ids=pixel_masks)
     logger.info("Initialized %d objects (after table removal)", len(valid_ids))
