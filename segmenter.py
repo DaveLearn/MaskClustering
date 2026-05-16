@@ -981,7 +981,7 @@ def initialize_scene(
     )
     clustered_objects = _cluster_objects(dataset, clustering_args, mask_trace=mask_trace if debug_dir is not None else None)
     if len(clustered_objects) == 0:
-        raise RuntimeError("MaskClustering produced no clustered objects")
+        logger.warning("MaskClustering produced no clustered objects; returning empty instance masks.")
     run_summary["clustered_object_count"] = len(clustered_objects)
 
     _save_object_dict(clustered_objects, work_root / "object_dict.npy")
