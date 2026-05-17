@@ -102,9 +102,13 @@ def get_observer_num_thresholds(visible_frames):
     '''
         Compute the observer number thresholds for each iteration. Range from 95% to 0%.
     '''
+    if visible_frames.numel() == 0:
+        return []
     observer_num_matrix = torch.matmul(visible_frames, visible_frames.transpose(0,1))
     observer_num_list = observer_num_matrix.flatten()
     observer_num_list = observer_num_list[observer_num_list > 0].cpu().numpy()
+    if observer_num_list.size == 0:
+        return []
     observer_num_thresholds = []
     for percentile in range(95, -5, -5):
         observer_num = np.percentile(observer_num_list, percentile)
@@ -160,6 +164,10 @@ def process_masks(frame_list, global_frame_mask_list, point_in_mask_matrix, boun
     '''
     if args.debug:
         print('start processing masks')
+    if len(global_frame_mask_list) == 0:
+        visible_frames = torch.zeros((0, len(frame_list)), dtype=torch.float32).cuda()
+        contained_masks = torch.zeros((0, 0), dtype=torch.float32).cuda()
+        return visible_frames, contained_masks, []
     visible_frames = []
     contained_masks = []
     undersegment_mask_ids = []
