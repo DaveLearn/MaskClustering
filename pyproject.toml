@@ -53,6 +53,7 @@ wheel = ">=0.47.0,<0.48"
 [tool.pixi.pypi-dependencies]
 psdframe = { path = "../../packages/psdframe", editable = true }
 initializerdefs = { path = "../../packages/initializerdefs", editable = true }
+psdstaticdataset = { path = "../../packages/psdstaticdataset", editable = true }
 
 [tool.pixi.pypi-options.dependency-overrides]
 numpy = "<2.0"
