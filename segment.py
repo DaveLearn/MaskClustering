@@ -21,7 +21,7 @@ import numpy as np
 import torch
 import tyro
 
-from initializerdefs import Observations, SceneSetup, load_observations_from_transforms_path
+from initializerdefs import Observations, SceneSetup, get_mesh_path_for_transforms, load_observations_from_transforms_path
 from segmenter import initialize_scene
 from utils.config import DEFAULT_CROPFORMER_CHECKPOINT, DEFAULT_CROPFORMER_CONFIG, DEFAULT_CROPFORMER_ROOT
 
@@ -123,6 +123,7 @@ def run() -> None:
             dataset,
             scene,
             intermediate_outputs_path=output_dir,
+            mesh_path=get_mesh_path_for_transforms(args.transforms_path),
             cropformer_root=args.cropformer_root,
             cropformer_config=args.cropformer_config,
             cropformer_checkpoint=args.cropformer_checkpoint,

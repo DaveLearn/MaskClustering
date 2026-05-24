@@ -883,6 +883,7 @@ def initialize_scene(
     observations: Observations,
     scene: SceneSetup,
     intermediate_outputs_path: Optional[Path] = None,
+    mesh_path: Optional[Path] = None,
     cropformer_root: Path = DEFAULT_CROPFORMER_ROOT,
     cropformer_config: Path = DEFAULT_CROPFORMER_CONFIG,
     cropformer_checkpoint: Path = DEFAULT_CROPFORMER_CHECKPOINT,
@@ -899,15 +900,17 @@ def initialize_scene(
     if not frames:
         raise ValueError("No frames in observations")
 
-    logger.info("Reconstructing TSDF mesh from %d frames ...", len(frames))
-    mesh = _extract_mesh_bounded_with_res(frames, depth_trunc=2, mesh_res=1024)
+    if mesh_path is None:
+        raise ValueError("mesh_path is required")
+    if not mesh_path.exists():
+        raise FileNotFoundError(f"Mesh not found at {mesh_path}")
+    logger.info("Loading mesh from %s", mesh_path)
+    mesh = o3d.io.read_triangle_mesh(str(mesh_path))
 
     logger.info("Building workspace voxels ...")
     workspace_voxels = get_workspace_voxels(scene)
-    mesh = _crop_mesh_to_workspace_bbox(mesh, workspace_voxels)
-    mesh = _crop_mesh_to_workspace(mesh, workspace_voxels)
     if not mesh.has_triangles() or len(np.asarray(mesh.triangles)) == 0:
-        raise RuntimeError("Mesh is empty after workspace cropping")
+        raise RuntimeError("Mesh is empty")
 
     if intermediate_outputs_path is not None:
         work_root = intermediate_outputs_path / "maskclustering_work"
