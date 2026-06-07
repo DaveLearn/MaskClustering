@@ -6,7 +6,7 @@ from utils.geometry import denoise
 from torch.nn.utils.rnn import pad_sequence
 
 COVERAGE_THRESHOLD = 0.2
-DISTANCE_THRESHOLD = 0.03
+DISTANCE_THRESHOLD = 0.005 #0.03
 FEW_POINTS_THRESHOLD = 25
 DEPTH_TRUNC = 20
 BBOX_EXPAND = 0.1
