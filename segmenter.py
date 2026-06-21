@@ -26,7 +26,7 @@ import torch
 
 from graph.construction import mask_graph_construction
 from graph.iterative_clustering import iterative_clustering
-from initializerdefs import InstanceMaskObjectsDef, ObjectSegmentations, ObservationFrame, Observations, SceneSetup
+from initializerdefs import InstanceMaskObjectsDef, ObjectSegmentations, ObservationFrame, Observations, SceneSetup, runtime_start, runtime_stop
 from psdframe import Frame
 from utils.config import DEFAULT_CROPFORMER_CHECKPOINT, DEFAULT_CROPFORMER_CONFIG, DEFAULT_CROPFORMER_ROOT
 from utils.mask_backprojection import frame_backprojection
@@ -896,6 +896,9 @@ def initialize_scene(
     point_filter_threshold: float = 0.5,
     debug: bool = False,
 ) -> ObjectSegmentations:
+    # NB: MaskClustering runs CropFormer in a subprocess, so its in-subprocess model
+    # load cannot be excluded from this level and is counted as compute.
+    _rt = runtime_start("maskclustering", scene=observations.id, n_frames=len(observations.frames))
     frames = [get_dataset_frame_from_observation_frame(frame) for frame in observations.frames]
     if not frames:
         raise ValueError("No frames in observations")
@@ -1021,9 +1024,13 @@ def initialize_scene(
             if np.any(mask == label_id):
                 frame_counts[label_id] += 1
 
-    valid_ids = np.array([label_id for label_id, count in frame_counts.items() if count >= 3], dtype=np.int32)
+    # Require instances to be seen in multiple views. The usual rule is >=3, but
+    # with only 3 views that demands the object appear in *every* frame, which is
+    # too strict, so relax to >=2 when there are <=3 views.
+    min_frame_count = 2 if len(frames) <= 3 else 3
+    valid_ids = np.array([label_id for label_id, count in frame_counts.items() if count >= min_frame_count], dtype=np.int32)
     run_summary["post_min_frame_filter_instance_count"] = int(len(valid_ids))
-    logger.info("Labels in >= 3 frames: %d / %d", len(valid_ids), len(all_label_ids))
+    logger.info("Labels in >= %d frames: %d / %d", min_frame_count, len(valid_ids), len(all_label_ids))
     for frame_name in instance_groups:
         instance_groups[frame_name][~np.isin(instance_groups[frame_name], valid_ids)] = 0
 
@@ -1060,4 +1067,5 @@ def initialize_scene(
 
     instance_mask_objects = InstanceMaskObjectsDef(frame_ids=frame_ids, pixel_object_ids=pixel_masks)
     logger.info("Initialized %d objects (after table removal)", len(valid_ids))
+    runtime_stop(_rt)
     return ObjectSegmentations(object_segmentations=instance_mask_objects)
