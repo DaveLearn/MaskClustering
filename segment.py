@@ -51,25 +51,25 @@ class Args:
     cropformer_checkpoint: Path = DEFAULT_CROPFORMER_CHECKPOINT
     """Path to the CropFormer checkpoint."""
 
-    confidence_threshold: float = 0.4
+    confidence_threshold: float = 0.5
     """Minimum score for CropFormer instance predictions."""
 
     step: int = 1
     """Frame stride used by MaskClustering graph construction."""
 
-    mask_visible_threshold: float = 0.15
+    mask_visible_threshold: float = 0.30
     """Minimum visibility ratio for a mask to count in a frame."""
 
-    undersegment_filter_threshold: float = 0.5
+    undersegment_filter_threshold: float = 0.3
     """Maximum split ratio before a mask is treated as undersegmented."""
 
-    view_consensus_threshold: float = 0.67
+    view_consensus_threshold: float = 0.9
     """View-consensus threshold used during iterative clustering."""
 
-    contained_threshold: float = 0.6
+    contained_threshold: float = 0.8
     """Containment threshold between masks across views."""
 
-    point_filter_threshold: float = 0.4
+    point_filter_threshold: float = 0.5
     """Minimum detection ratio for a point to remain in a cluster."""
 
     debug: bool = False
