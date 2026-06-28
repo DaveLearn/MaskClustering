@@ -72,7 +72,7 @@ class Args:
     point_filter_threshold: float = 0.4
     """Minimum detection ratio for a point to remain in a cluster."""
 
-    debug: bool = True
+    debug: bool = False
     """Enable verbose MaskClustering debugging behavior."""
 
 
