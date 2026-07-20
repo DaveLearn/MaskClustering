@@ -40,20 +40,13 @@ def crop_scene_points(mask_points, scene_points):
     y_min, y_max = torch.min(mask_points[:, 1]), torch.max(mask_points[:, 1])
     z_min, z_max = torch.min(mask_points[:, 2]), torch.max(mask_points[:, 2])
 
-    selected_point_mask = (
-        (scene_points[:, 0] > x_min)
-        & (scene_points[:, 0] < x_max)
-        & (scene_points[:, 1] > y_min)
-        & (scene_points[:, 1] < y_max)
-        & (scene_points[:, 2] > z_min)
-        & (scene_points[:, 2] < z_max)
-    )
+    selected_point_mask = (scene_points[:, 0] > x_min) & (scene_points[:, 0] < x_max) & (scene_points[:, 1] > y_min) & (scene_points[:, 1] < y_max) & (scene_points[:, 2] > z_min) & (scene_points[:, 2] < z_max)
     selected_point_ids = torch.where(selected_point_mask)[0]
     cropped_scene_points = scene_points[selected_point_ids]
     return cropped_scene_points, selected_point_ids
 
 
-def turn_mask_to_point(dataset, scene_points, mask_image, frame_id, debug_trace=None):
+def turn_mask_to_point(dataset, scene_points, mask_image, frame_id):
     intrinisc_cam_parameters = dataset.get_intrinsics(frame_id)
     extrinsics = dataset.get_extrinsic(frame_id)
     if np.sum(np.isinf(extrinsics)) > 0:
@@ -97,42 +90,28 @@ def turn_mask_to_point(dataset, scene_points, mask_image, frame_id, debug_trace=
     scene_points_num_list = []
     selected_point_ids_list = []
     initial_valid_mask_ids = []
-    initial_raw_mask_point_counts = []
-    initial_denoised_mask_point_counts = []
     for mask_id in ids:
         if mask_id == 0:
             continue
-        mask_trace = None if debug_trace is None else debug_trace.setdefault(int(mask_id), {})
         segmentation = mask_image == mask_id
         valid_mask = segmentation[depth_mask].cpu().numpy()
 
         mask_pcld = o3d.geometry.PointCloud()
         mask_points = view_points[valid_mask]
-        raw_mask_point_count = int(len(mask_points))
         if len(mask_points) < FEW_POINTS_THRESHOLD:
-            if mask_trace is not None:
-                mask_trace["backprojection"] = "few_points_raw"
-                mask_trace["raw_mask_points"] = raw_mask_point_count
             continue
         mask_pcld.points = o3d.utility.Vector3dVector(mask_points)
 
         mask_pcld = mask_pcld.voxel_down_sample(voxel_size=DISTANCE_THRESHOLD)
         mask_pcld, _ = denoise(mask_pcld)
         mask_points = np.asarray(mask_pcld.points)
-        denoised_mask_point_count = int(len(mask_points))
-        
+
         if len(mask_points) < FEW_POINTS_THRESHOLD:
-            if mask_trace is not None:
-                mask_trace["backprojection"] = "few_points_denoised"
-                mask_trace["raw_mask_points"] = raw_mask_point_count
-                mask_trace["denoised_mask_points"] = denoised_mask_point_count
             continue
-        
+
         mask_points = torch.tensor(mask_points).float().cuda()
         cropped_scene_points, selected_point_ids = crop_scene_points(mask_points, scene_points)
         initial_valid_mask_ids.append(mask_id)
-        initial_raw_mask_point_counts.append(raw_mask_point_count)
-        initial_denoised_mask_point_counts.append(denoised_mask_point_count)
         mask_points_list.append(mask_points)
         scene_points_list.append(cropped_scene_points)
         mask_points_num_list.append(len(mask_points))
@@ -156,8 +135,6 @@ def turn_mask_to_point(dataset, scene_points, mask_image, frame_id, debug_trace=
         mask_neighbor = neighbor_in_scene_pcld[i] # P, 20
         mask_point_num = mask_points_num_list[i] # Pi
         mask_neighbor = mask_neighbor[:mask_point_num] # Pi, 20
-        raw_mask_point_count = initial_raw_mask_point_counts[i]
-        denoised_mask_point_count = initial_denoised_mask_point_counts[i]
 
         valid_neighbor = mask_neighbor != -1 # Pi, 20
         neighbor = torch.unique(mask_neighbor[valid_neighbor])
@@ -165,29 +142,15 @@ def turn_mask_to_point(dataset, scene_points, mask_image, frame_id, debug_trace=
         coverage = torch.any(valid_neighbor, dim=1).sum().item() / mask_point_num
 
         if coverage < COVERAGE_THRESHOLD:
-            if debug_trace is not None:
-                mask_trace = debug_trace.setdefault(int(mask_id), {})
-                mask_trace["backprojection"] = "low_coverage"
-                mask_trace["raw_mask_points"] = raw_mask_point_count
-                mask_trace["denoised_mask_points"] = mask_point_num
-                mask_trace["coverage"] = float(coverage)
-                mask_trace["scene_support_points"] = int(len(neighbor_in_complete_scene_points))
             continue
         valid_mask_ids.append(mask_id)
         mask_info[mask_id] = set(neighbor_in_complete_scene_points)
         frame_point_ids.update(mask_info[mask_id])
-        if debug_trace is not None:
-            mask_trace = debug_trace.setdefault(int(mask_id), {})
-            mask_trace["backprojection"] = "kept"
-            mask_trace["coverage"] = float(coverage)
-            mask_trace["scene_support_points"] = int(len(mask_info[mask_id]))
-            mask_trace["raw_mask_points"] = raw_mask_point_count
-            mask_trace["denoised_mask_points"] = denoised_mask_point_count
 
     return mask_info, valid_mask_ids, list(frame_point_ids)
 
 
-def frame_backprojection(dataset, scene_points, frame_id, debug_trace=None):
+def frame_backprojection(dataset, scene_points, frame_id):
     mask_image = dataset.get_segmentation(frame_id, align_with_depth=True)
-    mask_info, _, frame_point_ids = turn_mask_to_point(dataset, scene_points, mask_image, frame_id, debug_trace=debug_trace)
+    mask_info, _, frame_point_ids = turn_mask_to_point(dataset, scene_points, mask_image, frame_id)
     return mask_info, frame_point_ids

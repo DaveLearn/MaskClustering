@@ -63,10 +63,3 @@ bootstrap_cropformer = "bash scripts/bootstrap_cropformer.sh"
 build_cropformer_ops = { cmd = "bash scripts/build_cropformer_ops.sh", depends-on = ["bootstrap_cropformer"] }
 download_cropformer_checkpoint = "python scripts/download_cropformer_checkpoint.py"
 segment_external = "python segment.py"
-predict_masks = { cmd = "bash scripts/run_maskclustering_task.sh predict", depends-on = ["build_cropformer_ops", "download_cropformer_checkpoint"] }
-cluster = "bash scripts/run_maskclustering_task.sh cluster"
-evaluate_class_agnostic = "bash scripts/run_maskclustering_task.sh evaluate"
-class_agnostic_pipeline = { cmd = "bash scripts/run_maskclustering_task.sh pipeline", depends-on = ["build_cropformer_ops", "download_cropformer_checkpoint"] }
-visualize = "bash scripts/run_maskclustering_task.sh visualize"
-demo_cluster = "python main.py --config demo --seq_name_list scene0608_00 --debug"
-demo_visualize = "python -m visualize.vis_scene --config demo --seq_name scene0608_00"

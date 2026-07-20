@@ -4,56 +4,33 @@ from tqdm import tqdm
 from utils.mask_backprojection import frame_backprojection
 from graph.node import Node
 
-def mask_graph_construction(args, scene_points, frame_list, dataset, mask_trace=None):
+def mask_graph_construction(args, scene_points, frame_list, dataset):
     '''
         Construct the mask graph:
         1. Build the point in mask matrix. (To speed up the following computation of view consensus rate.)
-        2. For each mask, compute the frames that it appears and the masks that
-           contains it. Concurrently, we judge whether this mask is
-           undersegmented.
+        2. For each mask, compute the frames that it appears and the masks that contains it. Concurrently, we judge whether this mask is undersegmented.
         3. Build the nodes in the graph.
     '''
     if args.debug:
         print('start building point in mask matrix')
-    boundary_points, point_in_mask_matrix, mask_point_clouds, point_frame_matrix, global_frame_mask_list = build_point_in_mask_matrix(
-        args, scene_points, frame_list, dataset, mask_trace=mask_trace
-    )
-    visible_frames, contained_masks, undersegment_mask_ids = process_masks(
-        frame_list,
-        global_frame_mask_list,
-        point_in_mask_matrix,
-        boundary_points,
-        mask_point_clouds,
-        args,
-        mask_trace=mask_trace,
-    )
+    boundary_points, point_in_mask_matrix, mask_point_clouds, point_frame_matrix, global_frame_mask_list = build_point_in_mask_matrix(args, scene_points, frame_list, dataset)
+    visible_frames, contained_masks, undersegment_mask_ids = process_masks(frame_list, global_frame_mask_list, point_in_mask_matrix, boundary_points, mask_point_clouds, args)
     observer_num_thresholds = get_observer_num_thresholds(visible_frames)
     nodes = init_nodes(global_frame_mask_list, visible_frames, contained_masks, undersegment_mask_ids, mask_point_clouds)
     return nodes, observer_num_thresholds, mask_point_clouds, point_frame_matrix
 
-def build_point_in_mask_matrix(args, scene_points, frame_list, dataset, mask_trace=None):
+def build_point_in_mask_matrix(args, scene_points, frame_list, dataset):
     '''
-        To speed up view consensus, we build a 'point in mask' matrix by a
-        trade-off of space for time. This matrix is of size
-        (scene_points_num, frame_num). For point i and frame j, if point i is
-        in the k-th mask in frame j, then M[i,j] = k. Otherwise, M[i,j] = 0.
-        (Note that mask id starts from 1).
+        To speed up the view consensus rate computation, we build a 'point in mask' matrix by a trade-off of space for time. This matrix is of size (scene_points_num, frame_num). For point i and frame j, if point i is in the k-th mask in frame j, then M[i,j] = k. Otherwise, M[i,j] = 0. (Note that mask id starts from 1).
 
         Returns:
-            boundary_points: a set of points that are contained by multiple
-                masks in a frame and thus are on the boundary of the masks. We
-                will not consider these points in the following computation of
-                view consensus rate.
+            boundary_points: a set of points that are contained by multiple masks in a frame and thus are on the boundary of the masks. We will not consider these points in the following computation of view consensus rate.
             point_in_mask_matrix: the 'point in mask' matrix.
-            mask_point_clouds: a dict where each key is the mask id in a frame,
-                and the value is the point ids that are in this mask.
-            point_frame_matrix: a matrix of size (scene_points_num, frame_num).
-                For point i and frame j, if point i is visible in frame j,
-                then M[i,j] = True. Otherwise, M[i,j] = False.
-            global_frame_mask_list: a list of masks in the whole sequence.
-                Each tuple contains the frame id and the mask id in this frame.
+            mask_point_clouds: a dict where each key is the mask id in a frame, and the value is the point ids that are in this mask.
+            point_frame_matrix: a matrix of size (scene_points_num, frame_num). For point i and frame j, if point i is visible in frame j, then M[i,j] = True. Otherwise, M[i,j] = False.
+            global_frame_mask_list: a list of masks in the whole sequence. Each tuple contains the frame id and the mask id in this frame.
     '''
-    
+
     scene_points_num = len(scene_points)
     frame_num = len(frame_list)
 
@@ -63,11 +40,10 @@ def build_point_in_mask_matrix(args, scene_points, frame_list, dataset, mask_tra
     point_frame_matrix = np.zeros((scene_points_num, frame_num), dtype=bool)
     global_frame_mask_list = []
     mask_point_clouds = {}
-    
+
     iterator = tqdm(enumerate(frame_list), total=len(frame_list)) if args.debug else enumerate(frame_list)
     for frame_cnt, frame_id in iterator:
-        frame_trace = None if mask_trace is None else mask_trace.setdefault(frame_id, {})
-        mask_dict, frame_point_cloud_ids = frame_backprojection(dataset, scene_points, frame_id, debug_trace=frame_trace)
+        mask_dict, frame_point_cloud_ids = frame_backprojection(dataset, scene_points, frame_id)
         if len(frame_point_cloud_ids) == 0:
             continue
         point_frame_matrix[frame_point_cloud_ids, frame_cnt] = True
@@ -81,7 +57,7 @@ def build_point_in_mask_matrix(args, scene_points, frame_list, dataset, mask_tra
             global_frame_mask_list.append((frame_id, mask_id))
         point_in_mask_matrix[list(frame_boundary_point_index), frame_cnt] = 0
         boundary_points.update(frame_boundary_point_index)
-    
+
     return boundary_points, point_in_mask_matrix, mask_point_clouds, point_frame_matrix, global_frame_mask_list
 
 def init_nodes(global_frame_mask_list, mask_project_on_all_frames, contained_masks, undersegment_mask_ids, mask_point_clouds):
@@ -102,6 +78,8 @@ def get_observer_num_thresholds(visible_frames):
     '''
         Compute the observer number thresholds for each iteration. Range from 95% to 0%.
     '''
+    # DEG integration: guard against empty scenes (no masks survive
+    # backprojection) so sparse table-top sequences do not crash here.
     if visible_frames.numel() == 0:
         return []
     observer_num_matrix = torch.matmul(visible_frames, visible_frames.transpose(0,1))
@@ -129,12 +107,12 @@ def process_one_mask(point_in_mask_matrix, boundary_points, mask_point_cloud, fr
 
     valid_mask_point_cloud = mask_point_cloud - boundary_points
     mask_point_cloud_info = point_in_mask_matrix[list(valid_mask_point_cloud), :]
-    
+
     possibly_visible_frames = np.where(np.sum(mask_point_cloud_info, axis=0) > 0)[0]
 
     split_num = 0
     visible_num = 0
-    
+
     for frame_id in possibly_visible_frames:
         mask_id_count = np.bincount(mask_point_cloud_info[:, frame_id])
         invisible_ratio = mask_id_count[0] / np.sum(mask_id_count) # 0 means that this point is invisible in this frame
@@ -151,19 +129,21 @@ def process_one_mask(point_in_mask_matrix, boundary_points, mask_point_cloud, fr
             contained_mask[frame_mask_idx] = 1
         else:
             split_num += 1 # This mask is splitted into two masks in this frame
-    
-    if visible_num == 0 or split_num / visible_num > args.undersegment_filter_threshold:
-        return False, visible_frame, contained_mask, visible_num, split_num
-    else:
-        return True, visible_frame, contained_mask, visible_num, split_num
 
-def process_masks(frame_list, global_frame_mask_list, point_in_mask_matrix, boundary_points, mask_point_clouds, args, mask_trace=None):
+    if visible_num == 0 or split_num / visible_num > args.undersegment_filter_threshold:
+        return False, visible_frame, contained_mask
+    else:
+        return True, visible_frame, contained_mask
+
+def process_masks(frame_list, global_frame_mask_list, point_in_mask_matrix, boundary_points, mask_point_clouds, args):
     '''
-        For each mask, compute the frames that it is visible and the masks that contains it. 
+        For each mask, compute the frames that it is visible and the masks that contains it.
         Meanwhile, we judge whether this mask is undersegmented.
     '''
     if args.debug:
         print('start processing masks')
+    # DEG integration: guard against empty scenes so torch.stack below does not
+    # fail on sparse table-top sequences that yield no masks.
     if len(global_frame_mask_list) == 0:
         visible_frames = torch.zeros((0, len(frame_list)), dtype=torch.float32).cuda()
         contained_masks = torch.zeros((0, 0), dtype=torch.float32).cuda()
@@ -174,26 +154,9 @@ def process_masks(frame_list, global_frame_mask_list, point_in_mask_matrix, boun
 
     iterator = tqdm(global_frame_mask_list) if args.debug else global_frame_mask_list
     for frame_id, mask_id in iterator:
-        valid, visible_frame, contained_mask, visible_num, split_num = process_one_mask(
-            point_in_mask_matrix,
-            boundary_points,
-            mask_point_clouds[f'{frame_id}_{mask_id}'],
-            frame_list,
-            global_frame_mask_list,
-            args,
-        )
+        valid, visible_frame, contained_mask = process_one_mask(point_in_mask_matrix, boundary_points, mask_point_clouds[f'{frame_id}_{mask_id}'], frame_list, global_frame_mask_list, args)
         visible_frames.append(visible_frame)
         contained_masks.append(contained_mask)
-        if mask_trace is not None:
-            trace = mask_trace.setdefault(frame_id, {}).setdefault(mask_id, {})
-            trace["visible_views"] = int(visible_num)
-            trace["split_views"] = int(split_num)
-            if valid:
-                trace["graph"] = "kept"
-            elif visible_num == 0:
-                trace["graph"] = "not_visible"
-            else:
-                trace["graph"] = "undersegmented"
         if not valid:
             global_mask_id = global_frame_mask_list.index((frame_id, mask_id))
             undersegment_mask_ids.append(global_mask_id)

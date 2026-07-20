@@ -90,19 +90,32 @@ From the repository root, DEG launches the same wrapper via:
 bash scripts/external_segmentation_initializers/maskclustering.sh --help
 ```
 
-## Optional
+## DEG parameter changes
 
-- Run the full class-agnostic benchmark pipeline:
+The DEG integration targets close-range table-top scenes rather than the room-scale
+ScanNet/ScanNet++/MatterPort3D scans the upstream defaults were tuned for. The
+following constants and defaults were adjusted for that regime. All are exercised
+by `./evals/maskclustering.sh`; no other behavioural changes were made to the
+upstream algorithm.
 
-```bash
-pixi run class_agnostic_pipeline
-```
+Backprojection constants (`utils/mask_backprojection.py`):
 
-- Enable DEG debug outputs for the external segmenter:
+| Constant | Upstream | DEG | Reason |
+| --- | --- | --- | --- |
+| `DISTANCE_THRESHOLD` | `0.03` | `0.005` | Voxel-downsample size and mask→scene ball-query radius (m). Tightened for table-top scale so small objects are not merged. |
+| `COVERAGE_THRESHOLD` | `0.3` | `0.2` | Minimum fraction of a mask's points that must find scene support to keep the mask. Loosened for sparser table-top coverage. |
 
-```bash
-DEBUG_MASKCLUSTERING=1 pixi run --frozen segment_external --help
-```
+Segmenter defaults (`segment.py`, overridable via its CLI flags):
+
+| Parameter | ScanNet default | DEG default |
+| --- | --- | --- |
+| `confidence_threshold` | `0.5` | `0.4` |
+| `step` (frame stride) | `10` | `1` |
+| `mask_visible_threshold` | `0.3` | `0.15` |
+| `undersegment_filter_threshold` | `0.3` | `0.5` |
+| `view_consensus_threshold` | `0.9` | `0.67` |
+| `contained_threshold` | `0.8` | `0.6` |
+| `point_filter_threshold` | `0.5` | `0.4` |
 
 The original upstream installation and benchmark instructions remain below for reference, but the pixi tasks above are the supported setup path for the DEG integration in this repository.
 
