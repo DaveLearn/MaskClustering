@@ -20,10 +20,7 @@ build-backend = "hatchling.build"
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["linux-64"]
-
-[tool.pixi.system-requirements]
-cuda = "12.9"
+platforms = [{ platform = "linux-64", cuda = "12.9" }]
 
 [tool.pixi.dependencies]
 python = "3.11.*"
@@ -59,7 +56,27 @@ psdstaticdataset = { path = "../../packages/psdstaticdataset", editable = true }
 numpy = "<2.0"
 
 [tool.pixi.tasks]
-bootstrap_cropformer = "bash scripts/bootstrap_cropformer.sh"
-build_cropformer_ops = { cmd = "bash scripts/build_cropformer_ops.sh", depends-on = ["bootstrap_cropformer"] }
-download_cropformer_checkpoint = "python scripts/download_cropformer_checkpoint.py"
-segment_external = "python segment.py"
+# The cropformer tasks declare `outputs` so pixi skips them once the tree is
+# cloned / the CUDA op is built / the checkpoint is fetched. That makes them
+# safe to hang off segment_external: they resolve on the first run only.
+bootstrap_cropformer = { cmd = "bash scripts/bootstrap_cropformer.sh", inputs = [
+    "scripts/bootstrap_cropformer.sh",
+], outputs = [
+    "third_party/Entity/Entityv2/CropFormer/mask2former/modeling/pixel_decoder/ops/setup.py",
+] }
+build_cropformer_ops = { cmd = "bash scripts/build_cropformer_ops.sh", depends-on = [
+    "bootstrap_cropformer",
+], inputs = [
+    "scripts/build_cropformer_ops.sh",
+    "scripts/patch_cropformer_sources.py",
+], outputs = [
+    "third_party/Entity/Entityv2/CropFormer/mask2former/modeling/pixel_decoder/ops/MultiScaleDeformableAttention*.so",
+] }
+download_cropformer_checkpoint = { cmd = "python scripts/download_cropformer_checkpoint.py", outputs = [
+    "checkpoints/cropformer/Mask2Former_hornet_3x_576d0b.pth",
+] }
+# NOTE: download_cropformer_checkpoint is deliberately NOT a dependency here --
+# the checkpoint is gated on Hugging Face (needs HF_TOKEN) and segment.py takes
+# --cropformer-checkpoint, so a hard dependency would break both the no-token
+# and the manually-placed-checkpoint cases. Run it once by hand.
+segment_external = { cmd = "python segment.py", depends-on = ["build_cropformer_ops"] }

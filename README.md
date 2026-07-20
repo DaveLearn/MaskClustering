@@ -35,54 +35,30 @@ pixi install
 
 This environment includes the CUDA-enabled PyTorch, Detectron2, MMCV, Pytorch3D, and the local DEG package dependencies needed by `segment.py` / `segmenter.py`.
 
-## 2. Bootstrap CropFormer sources
+## 2. Get the CropFormer checkpoint
 
-```bash
-pixi run bootstrap_cropformer
-```
-
-This clones the pinned `Entity` repository commit under:
-
-```text
-third_party/Entity/Entityv2/CropFormer
-```
-
-## 3. Build CropFormer native extensions
-
-```bash
-pixi run build_cropformer_ops
-```
-
-This builds the CropFormer ops in place inside the vendored CropFormer tree. The task is configured for the DEG integration and avoids user-local installs.
-
-## 4. Download the CropFormer checkpoint
-
-The checkpoint is gated on Hugging Face dataset access:
+The checkpoint is gated on Hugging Face, so fetching it needs a token:
 
 - repo: `qqlu1992/Adobe_EntitySeg`
 - file: `CropFormer_model/Entity_Segmentation/Mask2Former_hornet_3x/Mask2Former_hornet_3x_576d0b.pth`
 
-You must be granted access first. Then provide a Hugging Face token via `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) and run:
+Request access to the dataset, then:
 
 ```bash
 HF_TOKEN=... pixi run download_cropformer_checkpoint
 ```
 
-The checkpoint is stored at:
+This writes the checkpoint to `checkpoints/cropformer/Mask2Former_hornet_3x_576d0b.pth`. You can instead place the file at that path yourself, or point `--cropformer-checkpoint` at an existing copy.
 
-```text
-checkpoints/cropformer/Mask2Former_hornet_3x_576d0b.pth
-```
-
-If preferred, place the checkpoint at that path manually.
-
-## 5. Verify the DEG wrapper entrypoint
+## 3. Run the DEG wrapper entrypoint
 
 ```bash
-pixi run --frozen segment_external --help
+pixi run segment_external --help
 ```
 
 This is the DEG-facing CLI that consumes `Observations` and `SceneSetup` pickles and writes `objects_path: ...` on success.
+
+On its first invocation it clones the pinned `Entity` commit to `third_party/Entity/Entityv2/CropFormer` and compiles the CropFormer CUDA ops in place, which takes a few minutes. Later runs reuse the build. To force a rebuild, delete `third_party/Entity/Entityv2/CropFormer/mask2former/modeling/pixel_decoder/ops/MultiScaleDeformableAttention*.so`.
 
 From the repository root, DEG launches the same wrapper via:
 
