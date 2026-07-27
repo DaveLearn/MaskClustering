@@ -10,6 +10,16 @@ CUDA_HOME="${CUDA_HOME:-${CONDA_PREFIX:-}}"
 export PYTHONNOUSERSITE=1
 unset TORCH_CUDA_ARCH_LIST
 
+# Compiler flags leak in from an already-activated parent shell (e.g. a
+# launcher run from a root `deg` pixi shell): the parent's own cuda-toolkit
+# activation exports CFLAGS/CXXFLAGS/LDFLAGS pointing at its own environment,
+# and this project's own gcc/g++ activation prepends onto that rather than
+# replacing it. The result compiles the extension against a mix of both
+# environments' headers/libs, producing a .so that builds without error but
+# fails on import with "does not define module export function". Clear them
+# so only this environment's own compiler defaults apply.
+unset CFLAGS CXXFLAGS LDFLAGS
+
 if [[ ! -d "${CROPFORMER_ROOT}" ]]; then
     printf 'CropFormer root not found: %s\n' "${CROPFORMER_ROOT}" >&2
     printf 'Run bootstrap_cropformer first.\n' >&2
